@@ -1,13 +1,13 @@
-import cv2
-import numpy as np
+from picamera2 import Picamera2
 import torch
 from torch import nn
-import torchvision
 import torchvision.transforms as transforms
-import time
+from time import sleep
 from timeit import default_timer as timer 
 from PIL import Image
 from ultralytics import YOLO
+import cv2
+import RPi.GPIO as GPIO
 
 # TinyVGG model for melanoma detection
 class TinyVGG(nn.Module):
@@ -50,8 +50,8 @@ class TinyVGG(nn.Module):
             
         return self.classifier(self.conv_block_2(self.conv_block_1(x))) # <- leverage the benefits of operator fusion
 
-# Function to move servos based on error in x and y coordinates
-def move_servos(x_error, y_error, tolerance):
+# Function to determine step for pan or tilt servo based on error in x and y coordinates
+def get_deltas(x_error, y_error, tolerance):
     '''
     returns the amount to change duty cycle of servos based on the error in x and y coordinates of the center of the mole detection box
     '''
@@ -87,18 +87,38 @@ def save_cropped_frame(frame, x, y, img_size=64):
 #device agnostic code to ensure usage of cuda if avaliable, speeding up runtime and mitigating errors
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+GPIO.setmode(GPIO.BCM)
+
+# Set up GPIO pins for servos
+GPIO.setup(12, GPIO.OUT)
+GPIO.setup(13, GPIO.OUT)
+
+# Set up PWM for servos
+pan_servo = GPIO.PWM(12, 50)
+tilt_servo = GPIO.PWM(13, 50)
+
+WIDTH = 400
+HEIGHT = 400
+
 # Both servos start at 90 degrees (center), and constants are set according to servo rotation directions
 duty_pan = 7
 pan_constant = 1
 duty_tilt = 7
 tilt_constant = 1
 
+# Start PWM with duty cycle of 7 (center position)
+pan_servo.start(duty_pan)
+tilt_servo.start(duty_tilt)
+sleep(2)
+
 # To capture video from webcam
-cap = cv2.VideoCapture(0)
+cam = Picamera2()
+cam.configure(cam.create_preview_configuration(main={"format": 'XRGB8888', "size": (WIDTH, HEIGHT)}))
+cam.start()
 
 # Center coordinates for screen
-screen_center_x = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) / 2)
-screen_center_y = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) / 2)
+screen_center_x = WIDTH // 2
+screen_center_y = HEIGHT // 2
 
 # Range of acceptance for rectangle being center (50 pixels)
 tolerance = 50 
@@ -111,15 +131,16 @@ end = 0
 
 # Progress indicators on lcd screen
 lcd_txt = "Melanoma Detection!"
-time.sleep(2)
+sleep(2)
 lcd_txt = "Searching for mole..."
 
-cond = True
-
-while cond:
+while True:
     
     # Read the frame
-    _, frame = cap.read()
+    frame = cam.capture_array()
+    
+    # Removes alpha channel from frame
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
 
     # Detect objects
     results = model(frame)
@@ -163,32 +184,41 @@ while cond:
             start = 0   # Reset start timer to 0 once rectangle no longer centered
             
             # Servo error correcting
-            delta_x, delta_y = move_servos(x_error, y_error, tolerance)
+            delta_x, delta_y = get_deltas(x_error, y_error, tolerance)
             print(delta_x, delta_y)
             
-            duty_pan += delta_x
-            duty_tilt += delta_y
+            duty_pan += delta_x*pan_constant
+            duty_tilt += delta_y*tilt_constant
+
+            pan_servo.ChangeDutyCycle(duty_pan)
+            tilt_servo.ChangeDutyCycle(duty_tilt)
+            sleep(0.01)
             
             # If any duty cycle falls out of range of servo (2-12), set to center position
             if (duty_pan > 12 or duty_pan < 2) or (duty_tilt > 12 or duty_tilt < 2):
                 duty_pan = 7
                 duty_tilt = 7
+                pan_servo.ChangeDutyCycle(duty_pan)
+                tilt_servo.ChangeDutyCycle(duty_tilt)
+
 
     # Stop if q is pressed
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
     
-    # Display
-    cv2.imshow('Mole Detection', frame)
+    if frame is not None:
+        # Display
+        cv2.imshow('Mole Detection', frame)
+    else:
+        print("Frame is Empty")
 
 
 # Release the VideoCapture object
-cap.release()
 cv2.destroyAllWindows()
 
 # Progress indicators on lcd screen
 lcd_txt = "Mole detected!"
-time.sleep(1)
+sleep(1)
 lcd_txt = "Analyzing mole..."
 
 # Load Pytorch Model
@@ -230,6 +260,3 @@ with torch.inference_mode():
     # Progress indicators on lcd screen, showing the predicted class and confidence percentage
     lcd_txt = f"Predicted class: {classes[predicted_class.item()]}" + f"\nConfidence: {confidence.item() * 100:.2f}%"
     print(lcd_txt)
-
-
-    
