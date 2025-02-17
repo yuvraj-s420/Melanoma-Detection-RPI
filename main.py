@@ -7,6 +7,7 @@ from timeit import default_timer as timer
 from PIL import Image
 from ultralytics import YOLO
 import cv2
+import lcd
 import RPi.GPIO as GPIO
 
 # TinyVGG model for melanoma detection
@@ -91,11 +92,11 @@ GPIO.setmode(GPIO.BCM)
 
 # Set up GPIO pins for servos
 GPIO.setup(12, GPIO.OUT)
-GPIO.setup(13, GPIO.OUT)
+GPIO.setup(16, GPIO.OUT)
 
 # Set up PWM for servos
 pan_servo = GPIO.PWM(12, 50)
-tilt_servo = GPIO.PWM(13, 50)
+tilt_servo = GPIO.PWM(16, 50)
 
 WIDTH = 400
 HEIGHT = 400
@@ -129,10 +130,14 @@ model = YOLO("MoleDetectionYOLO.pt")
 start = 0
 end = 0
 
+# Initialize lcd screen
+lcd.lcd_init()
+
 # Progress indicators on lcd screen
-lcd_txt = "Melanoma Detection!"
+lcd.lcd_string("Welcome!", line=lcd.LCD_LINE_1)
 sleep(2)
-lcd_txt = "Searching for mole..."
+lcd.lcd_string("Searching...", line=lcd.LCD_LINE_1)
+sleep(2)
 
 while True:
     
@@ -192,7 +197,7 @@ while True:
 
             pan_servo.ChangeDutyCycle(duty_pan)
             tilt_servo.ChangeDutyCycle(duty_tilt)
-            sleep(0.01)
+            sleep(1)
             
             # If any duty cycle falls out of range of servo (2-12), set to center position
             if (duty_pan > 12 or duty_pan < 2) or (duty_tilt > 12 or duty_tilt < 2):
@@ -217,9 +222,10 @@ while True:
 cv2.destroyAllWindows()
 
 # Progress indicators on lcd screen
-lcd_txt = "Mole detected!"
-sleep(1)
-lcd_txt = "Analyzing mole..."
+lcd.lcd_string("Mole detected!", line=lcd.LCD_LINE_1)
+sleep(2)
+lcd.lcd_string("Analyzing Mole..", line=lcd.LCD_LINE_1)
+sleep(2)
 
 # Load Pytorch Model
 melanoma_model = TinyVGG(input_shape = 3,   #3 color channels (RGB)
@@ -229,7 +235,7 @@ melanoma_model = TinyVGG(input_shape = 3,   #3 color channels (RGB)
 # Load the entire checkpoint
 checkpoint = torch.load('MelanomaPytorchModel.pth', map_location=torch.device(device))
 
-# Extract the state dictionary (due to how model was saved in previous code)
+# Extract the state dictionary (due to how model was saved in training code)
 model_state_dict = checkpoint['model_state_dict']
 
 # Load the state dictionary into the model
@@ -258,5 +264,9 @@ with torch.inference_mode():
     confidence, predicted_class = torch.max(softmax_values, dim=1)  # Get the class with the highest probability
     
     # Progress indicators on lcd screen, showing the predicted class and confidence percentage
-    lcd_txt = f"Predicted class: {classes[predicted_class.item()]}" + f"\nConfidence: {confidence.item() * 100:.2f}%"
-    print(lcd_txt)
+    lcd.lcd_string(f"Mole is {classes[predicted_class.item()]}", line=lcd.LCD_LINE_1)
+    lcd.lcd_string(f"Certainty: {confidence.item() * 100:.1f}%", line=lcd.LCD_LINE_2)
+
+sleep(5)
+lcd.lcd_clear()
+GPIO.cleanup()
